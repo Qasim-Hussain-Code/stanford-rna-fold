@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rna_fold",
-    version="0.1.0",
+    version="0.2.0",
     description=(
         "Template-Based Modeling pipeline for RNA 3D structure prediction. "
         "Stanford RNA 3D Folding Challenge."

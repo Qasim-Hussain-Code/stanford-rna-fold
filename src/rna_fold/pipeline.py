@@ -1,9 +1,11 @@
 """
 pipeline.py — End-to-end RNA structure prediction pipeline.
 
-Orchestrates the full TBM workflow with improvements:
-  - Multi-template consensus coordinate blending
-  - Template-diverse ensemble (different templates as different models)
+Orchestrates the full TBM workflow with maximum-impact improvements:
+  - Multi-template consensus with Kabsch superposition
+  - Template-diverse ensemble + maximin diversity selection
+  - Simulated annealing energy-based refinement
+  - Nussinov-guided gap filling
   - Multi-chain handling
   - Multiprocessing for throughput
 """
@@ -42,44 +44,25 @@ def predict_structure(
     """
     Predict RNA 3D structure from sequence.
 
-    Improvements over baseline:
-      1. Multi-template consensus: blends top-3 templates (weighted by identity)
-      2. Template-diverse ensemble: uses different templates as separate models
-      3. Nussinov-guided gap filling (via transfer.py)
-      4. Compact random walk de novo fallback (via transfer.py)
-
-    Parameters
-    ----------
-    sequence : str
-        RNA sequence (ACGU).
-    template_index : list of dict
-        Template index from build_template_index().
-    n_models : int
-        Number of models to generate (default 5).
-    min_identity : float
-        Minimum sequence identity threshold.
-    min_coverage : float
-        Minimum alignment coverage threshold.
-    verbose : bool
-        Print progress information.
-
-    Returns
-    -------
-    list of np.ndarray
-        n_models coordinate arrays, each shape (N, 3).
+    Full pipeline:
+      1. Template search (k-mer filtered + NW with RIBOSUM scoring)
+      2. Multi-template consensus OR single template OR de novo
+      3. Classical refinement (smoothing + distance regularization)
+      4. Simulated annealing with coarse-grained energy function
+      5. Template-diverse ensemble with maximin diversity selection
     """
     n = len(sequence)
 
-    # Step 1: Search for templates (get more than we need for consensus)
+    # Step 1: Search for templates
     hits = []
     if template_index:
         hits = search_templates(
             query_sequence=sequence,
             template_index=template_index,
-            top_n=10,  # Get more for consensus and diversity
+            top_n=10,
             min_identity=min_identity,
             min_coverage=min_coverage,
-            max_kmer_candidates=150,
+            max_kmer_candidates=200,
         )
 
     if verbose:
@@ -91,39 +74,82 @@ def predict_structure(
             print(f"    No template hits — using de novo fallback")
 
     # Step 2: Generate base coordinates
+    has_template = len(hits) > 0
     if len(hits) >= 3:
-        # Multi-template consensus: blend top-3 templates
         base_coords = _multi_template_predict(sequence, hits[:3], verbose)
     elif len(hits) >= 1:
-        # Single template
         base_coords = _single_template_predict(sequence, hits[0], verbose)
     else:
-        # De novo (compact random walk with Nussinov guidance)
         base_coords = generate_de_novo(sequence, geometry="compact")
 
-    # Step 3: Refine base coordinates
+    # Step 3: Classical refinement
     base_coords = refine_coordinates(base_coords)
 
-    # Step 4: Generate ensemble
-    if len(hits) >= 2:
-        # Template-diverse ensemble: use multiple template hypotheses
-        ensemble = _template_diverse_ensemble(
-            sequence, base_coords, hits, n_models, verbose
+    # Step 4: Simulated annealing refinement (physics-based)
+    # More SA steps for de novo (more room to improve), fewer for template-based
+    try:
+        from .energy import refine_with_energy
+        sa_steps = 500 if has_template else 2000
+        if n > 500:
+            sa_steps = min(sa_steps, 300)  # Time guard
+        base_coords = refine_with_energy(
+            base_coords, sequence=sequence,
+            n_steps=sa_steps, seed=42,
         )
-    else:
-        # Standard perturbation-based ensemble
-        ensemble = generate_ensemble(base_coords, n_models=n_models)
+    except Exception:
+        pass
 
-    # Clip coordinates to valid range
+    # Step 5: Generate diverse ensemble
+    # Collect all template-derived alternatives for the ensemble
+    template_alternatives = []
+    if len(hits) >= 2:
+        for hit in hits[1:4]:  # Up to 3 alternatives
+            try:
+                alt = _single_template_predict(sequence, hit)
+                alt = refine_coordinates(alt)
+                template_alternatives.append(alt)
+            except Exception:
+                continue
+
+    # Build candidate pool: base + template alternatives + perturbations
+    all_candidates = [base_coords.copy()] + template_alternatives
+
+    # Generate perturbation-based candidates via the ensemble module
+    # (which already generates ~20 candidates internally and selects via maximin)
+    perturbation_models = generate_ensemble(
+        base_coords,
+        n_models=max(n_models, 5),
+        sequence=sequence,
+        use_sa=(n <= 200),  # SA variants only for small structures
+    )
+
+    # Merge all candidates
+    for model in perturbation_models:
+        all_candidates.append(model)
+
+    # Final maximin diversity selection across ALL candidates
+    from .ensemble import maximin_select
+    ensemble = maximin_select(all_candidates, n_models)
+
+    # Clip coordinates
     for i in range(len(ensemble)):
         ensemble[i] = np.clip(ensemble[i], -999.999, 9999.999)
 
     return ensemble
 
 
+# ============================================================
+# Template coordinate extraction
+# ============================================================
+
 def _multi_template_predict(sequence: str, hits: List[dict],
                             verbose: bool = False) -> np.ndarray:
-    """Use multi-template consensus for base coordinate prediction."""
+    """
+    Multi-template consensus with Kabsch superposition.
+
+    Templates are first Kabsch-aligned to the best template before
+    averaging, preventing coordinate smearing from misaligned frames.
+    """
     template_results = []
     template_coords_list = []
 
@@ -139,6 +165,16 @@ def _multi_template_predict(sequence: str, hits: List[dict],
     if len(template_results) >= 2:
         if verbose:
             print(f"    Multi-template consensus from {len(template_results)} templates")
+
+        # Kabsch-align all templates to the first (best) template
+        try:
+            from .kabsch import kabsch_align
+            _kabsch_align_templates(
+                template_results, template_coords_list
+            )
+        except Exception:
+            pass
+
         return multi_template_consensus(
             sequence, template_results, template_coords_list
         )
@@ -146,6 +182,72 @@ def _multi_template_predict(sequence: str, hits: List[dict],
         return _single_template_predict(sequence, template_results[0], verbose)
     else:
         return generate_de_novo(sequence, geometry="compact")
+
+
+def _kabsch_align_templates(template_results, template_coords_list):
+    """
+    Structurally superpose templates 2..N onto template 1 using Kabsch.
+
+    This ensures that when we average coordinates across templates,
+    they are in the same reference frame. Without this, the average
+    would smear the structure.
+    """
+    from .kabsch import kabsch_align
+
+    if len(template_results) < 2:
+        return
+
+    ref_coords = template_coords_list[0][0]  # Best template coords
+    ref_mapping = {t: q for q, t in template_results[0]["mapping"]}
+
+    for i in range(1, len(template_results)):
+        target_coords = template_coords_list[i][0]
+        target_mapping = {t: q for q, t in template_results[i]["mapping"]}
+
+        # Find common query positions between template 0 and template i
+        ref_query_set = set(q for q, _ in template_results[0]["mapping"])
+        target_query_set = set(q for q, _ in template_results[i]["mapping"])
+        common_query = sorted(ref_query_set & target_query_set)
+
+        if len(common_query) < 4:
+            continue
+
+        # Build corresponding coordinate arrays
+        ref_map_inv = {q: t for q, t in template_results[0]["mapping"]}
+        target_map_inv = {q: t for q, t in template_results[i]["mapping"]}
+
+        ref_pts = []
+        target_pts = []
+        for q in common_query:
+            rt = ref_map_inv[q]
+            tt = target_map_inv[q]
+            if rt < len(ref_coords) and tt < len(target_coords):
+                ref_pts.append(ref_coords[rt])
+                target_pts.append(target_coords[tt])
+
+        if len(ref_pts) < 4:
+            continue
+
+        ref_arr = np.array(ref_pts)
+        target_arr = np.array(target_pts)
+
+        # Kabsch align
+        aligned, _, rmsd = kabsch_align(target_arr, ref_arr)
+
+        # Apply the same transformation to ALL target template coordinates
+        centroid_target = np.mean(target_arr, axis=0)
+        centroid_ref = np.mean(ref_arr, axis=0)
+        H = (target_arr - centroid_target).T @ (ref_arr - centroid_ref)
+        U, S, Vt = np.linalg.svd(H)
+        d = np.linalg.det(Vt.T @ U.T)
+        sign_m = np.eye(3)
+        sign_m[2, 2] = np.sign(d)
+        R = Vt.T @ sign_m @ U.T
+
+        # Transform all coordinates
+        full_coords = template_coords_list[i][0]
+        transformed = (full_coords - centroid_target) @ R.T + centroid_ref
+        template_coords_list[i] = (transformed, template_coords_list[i][1])
 
 
 def _single_template_predict(sequence: str, hit: dict,
@@ -163,56 +265,6 @@ def _single_template_predict(sequence: str, hit: dict,
         return generate_de_novo(sequence, geometry="compact")
 
 
-def _template_diverse_ensemble(
-    sequence: str,
-    base_coords: np.ndarray,
-    hits: List[dict],
-    n_models: int,
-    verbose: bool = False,
-) -> List[np.ndarray]:
-    """
-    Generate diverse ensemble using different templates as different models.
-
-    Strategy:
-      Model 1: Multi-template consensus (best prediction)
-      Models 2-3: Individual top templates (structural diversity)
-      Models 4-5: Perturbations of base (noise + hinge)
-    """
-    ensemble = [base_coords.copy()]  # Model 1: consensus
-
-    # Models 2-3: Individual templates (if available)
-    used_templates = 0
-    for hit in hits[1:]:  # Skip first (already in consensus)
-        if used_templates >= 2:
-            break
-        try:
-            coords = _single_template_predict(sequence, hit)
-            coords = refine_coordinates(coords)
-            ensemble.append(coords)
-            used_templates += 1
-        except Exception:
-            continue
-
-    # Fill remaining slots with perturbation-based models
-    remaining = n_models - len(ensemble)
-    if remaining > 0:
-        perturbation_ensemble = generate_ensemble(
-            base_coords, n_models=remaining + 1
-        )
-        # Skip the first (base), take the perturbations
-        for model in perturbation_ensemble[1:]:
-            if len(ensemble) >= n_models:
-                break
-            ensemble.append(model)
-
-    # If still not enough, add noise variants
-    while len(ensemble) < n_models:
-        noised = base_coords + np.random.normal(0, 1.5, base_coords.shape)
-        ensemble.append(noised)
-
-    return ensemble[:n_models]
-
-
 # ============================================================
 # Multi-chain handling
 # ============================================================
@@ -225,20 +277,7 @@ def predict_multichain(
 ) -> Dict[str, List[np.ndarray]]:
     """
     Predict structures for multi-chain RNA complexes.
-
-    Each chain is folded independently, then positioned with
-    reasonable inter-chain spacing.
-
-    Parameters
-    ----------
-    chains : dict of {chain_id: sequence}
-    template_index : list of dict
-    n_models : int
-    verbose : bool
-
-    Returns
-    -------
-    dict of {chain_id: list of model coords}
+    Each chain folded independently, positioned with inter-chain spacing.
     """
     chain_results = {}
     offset = np.zeros(3)
@@ -252,16 +291,14 @@ def predict_multichain(
             verbose=verbose,
         )
 
-        # Apply offset to position chains next to each other
         for i in range(len(models)):
             models[i] = models[i] + offset
 
         chain_results[chain_id] = models
 
-        # Compute offset for next chain: place it beyond this chain's extent
         all_coords = np.vstack(models)
         max_extent = np.max(all_coords, axis=0) - np.min(all_coords, axis=0)
-        offset += np.array([max_extent[0] + 20.0, 0, 0])  # 20 Å gap
+        offset += np.array([max_extent[0] + 20.0, 0, 0])
 
     return chain_results
 
@@ -315,8 +352,6 @@ def _predict_worker(args):
         )
         return (target_id, sequence, models)
     except Exception as e:
-        # Fallback to de novo on any error
-        n = len(sequence)
         base = generate_de_novo(sequence, geometry="compact")
         models = generate_ensemble(base, n_models=5)
         return (target_id, sequence, models)
@@ -335,15 +370,6 @@ def run_pipeline(
 ) -> None:
     """
     Run the complete prediction pipeline for all test targets.
-
-    Parameters
-    ----------
-    test_sequences : dict of {target_id: sequence}
-    template_index : list of dict
-    output_path : str
-    verbose : bool
-    n_workers : int
-        Number of parallel workers. 0 = auto (use all CPUs).
     """
     total_targets = len(test_sequences)
     header = ("ID,resname,resid,"
@@ -355,7 +381,6 @@ def run_pipeline(
         print(f"  Predicting {total_targets} targets "
               f"({total_residues} total residues)")
 
-    # Determine parallelism
     if n_workers == 0:
         n_workers = min(cpu_count(), total_targets, 8)
 
@@ -365,7 +390,6 @@ def run_pipeline(
         f.write(header)
 
         if use_parallel and total_targets >= 4:
-            # Parallel prediction
             if verbose:
                 print(f"  Using {n_workers} parallel workers")
 
@@ -385,13 +409,10 @@ def run_pipeline(
                               f"{len(sequence)} nt — done")
             except Exception as e:
                 if verbose:
-                    print(f"  Parallel execution failed ({e}), "
-                          f"falling back to sequential")
-                # Fallback to sequential
+                    print(f"  Parallel failed ({e}), sequential fallback")
                 _run_sequential(f, test_sequences, template_index,
                                verbose, total_targets)
         else:
-            # Sequential prediction
             _run_sequential(f, test_sequences, template_index,
                            verbose, total_targets)
 

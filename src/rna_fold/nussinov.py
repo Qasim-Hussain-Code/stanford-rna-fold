@@ -36,6 +36,13 @@ def predict_base_pairs(sequence: str) -> List[Tuple[int, int]]:
     if n < MIN_HAIRPIN_LOOP + 2:
         return []
 
+    # Speed guard: for long sequences, Nussinov is O(n³).
+    # At n=500, that's ~125M operations (OK). At n=2000, it's 8B (too slow).
+    # For long sequences, split into windows and merge.
+    MAX_NUSSINOV_LEN = 500
+    if n > MAX_NUSSINOV_LEN:
+        return _windowed_nussinov(sequence, window_size=MAX_NUSSINOV_LEN, overlap=50)
+
     # DP table
     dp = np.zeros((n, n), dtype=np.int32)
 
@@ -134,6 +141,52 @@ def get_pair_partner(position: int,
         if j == position:
             return i
     return -1
+
+
+def _windowed_nussinov(
+    sequence: str,
+    window_size: int = 500,
+    overlap: int = 50,
+) -> List[Tuple[int, int]]:
+    """
+    Windowed Nussinov for long sequences.
+
+    Splits the sequence into overlapping windows, runs the standard
+    Nussinov on each window, then merges and deduplicates results.
+    Cannot find very long-range pairs (>window_size apart), but those
+    are rare in RNA anyway.
+    """
+    n = len(sequence)
+    all_pairs = set()
+    step = window_size - overlap
+
+    for start in range(0, n, step):
+        end = min(start + window_size, n)
+        subseq = sequence[start:end]
+
+        if len(subseq) < MIN_HAIRPIN_LOOP + 2:
+            continue
+
+        # Run standard Nussinov on the window
+        dp = np.zeros((len(subseq), len(subseq)), dtype=np.int32)
+        for span in range(MIN_HAIRPIN_LOOP + 1, len(subseq)):
+            for i in range(len(subseq) - span):
+                j = i + span
+                dp[i, j] = dp[i, j - 1]
+                for k in range(i, j - MIN_HAIRPIN_LOOP):
+                    if _can_pair(subseq[k], subseq[j]):
+                        left = dp[i, k - 1] if k > i else 0
+                        right = dp[k + 1, j - 1] if k + 1 <= j - 1 else 0
+                        dp[i, j] = max(dp[i, j], left + 1 + right)
+
+        local_pairs = []
+        _traceback(dp, subseq, 0, len(subseq) - 1, local_pairs)
+
+        # Offset pairs to global coordinates
+        for i, j in local_pairs:
+            all_pairs.add((start + i, start + j))
+
+    return sorted(all_pairs)
 
 
 def _can_pair(a: str, b: str) -> bool:

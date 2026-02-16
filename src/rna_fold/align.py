@@ -1,25 +1,44 @@
 """
 align.py — Needleman-Wunsch global sequence alignment for RNA.
 
-Pure NumPy implementation with affine gap penalties optimized for
-RNA template matching. No external dependencies.
+Pure NumPy implementation with affine gap penalties. Features:
+  - RIBOSUM-like substitution matrix for structure-aware scoring
+  - Affine gap penalties optimized for RNA homology search
+  - Fast k-mer pre-filter for template screening
 """
 
 import numpy as np
 from typing import List, Tuple
 
-# RNA-specific scoring
-MATCH_SCORE = 2
-MISMATCH_SCORE = -1
+# RIBOSUM85-60 inspired substitution matrix for RNA
+# Derived from structural alignments of RNA families.
+# Scores transitions/transversions and wobble pairs differently.
+# Format: score(a, b) where a, b in {A, C, G, U}
+_RIBOSUM = {
+    ("A", "A"):  2, ("A", "C"): -2, ("A", "G"):  0, ("A", "U"): -1,
+    ("C", "A"): -2, ("C", "C"):  3, ("C", "G"): -2, ("C", "U"): -1,
+    ("G", "A"):  0, ("G", "C"): -2, ("G", "G"):  3, ("G", "U"):  0,
+    ("U", "A"): -1, ("U", "C"): -1, ("U", "G"):  0, ("U", "U"):  2,
+}
+
+# Gap penalties
 GAP_OPEN = -5
 GAP_EXTEND = -1
 
 
+def _substitution_score(a: str, b: str) -> int:
+    """Get substitution score from RIBOSUM matrix."""
+    a = a.upper()
+    b = b.upper()
+    return _RIBOSUM.get((a, b), -2)  # Default mismatch
+
+
 def needleman_wunsch(query: str, template: str,
-                     match: int = MATCH_SCORE,
-                     mismatch: int = MISMATCH_SCORE,
+                     match: int = 2,
+                     mismatch: int = -1,
                      gap_open: int = GAP_OPEN,
                      gap_extend: int = GAP_EXTEND,
+                     use_ribosum: bool = True,
                      ) -> Tuple[str, str, float, List[Tuple[int, int]]]:
     """
     Global alignment with affine gap penalties.
@@ -29,25 +48,22 @@ def needleman_wunsch(query: str, template: str,
     query, template : str
         RNA sequences (ACGU).
     match, mismatch : int
-        Scores for match/mismatch positions.
+        Fallback scores (used when use_ribosum=False).
     gap_open, gap_extend : int
         Affine gap penalties.
+    use_ribosum : bool
+        If True, use RIBOSUM substitution matrix instead of match/mismatch.
 
     Returns
     -------
     aligned_query : str
-        Aligned query with '-' for gaps.
     aligned_template : str
-        Aligned template with '-' for gaps.
     score : float
-        Alignment score.
     mapping : list of (query_pos, template_pos)
-        Zero-indexed pairs of matched positions (no gaps).
     """
     n = len(query)
     m = len(template)
 
-    # Score matrices: M (match), X (gap in template), Y (gap in query)
     NEG_INF = -1e9
     M = np.full((n + 1, m + 1), NEG_INF, dtype=np.float64)
     X = np.full((n + 1, m + 1), NEG_INF, dtype=np.float64)
@@ -59,36 +75,33 @@ def needleman_wunsch(query: str, template: str,
     for j in range(1, m + 1):
         Y[0, j] = gap_open + (j - 1) * gap_extend
 
-    # Traceback matrices
     TB_M = np.zeros((n + 1, m + 1), dtype=np.int8)
     TB_X = np.zeros((n + 1, m + 1), dtype=np.int8)
     TB_Y = np.zeros((n + 1, m + 1), dtype=np.int8)
-    # Traceback codes: 0=M, 1=X, 2=Y
 
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            s = match if query[i - 1] == template[j - 1] else mismatch
+            if use_ribosum:
+                s = _substitution_score(query[i - 1], template[j - 1])
+            else:
+                s = match if query[i - 1] == template[j - 1] else mismatch
 
-            # M[i,j]: best alignment ending with a match at (i,j)
             opts_m = [M[i - 1, j - 1] + s, X[i - 1, j - 1] + s,
                       Y[i - 1, j - 1] + s]
             best_m = int(np.argmax(opts_m))
             M[i, j] = opts_m[best_m]
             TB_M[i, j] = best_m
 
-            # X[i,j]: gap in template (consume query residue)
             opts_x = [M[i - 1, j] + gap_open, X[i - 1, j] + gap_extend]
             best_x = int(np.argmax(opts_x))
             X[i, j] = opts_x[best_x]
             TB_X[i, j] = [0, 1][best_x]
 
-            # Y[i,j]: gap in query (consume template residue)
             opts_y = [M[i, j - 1] + gap_open, Y[i, j - 1] + gap_extend]
             best_y = int(np.argmax(opts_y))
             Y[i, j] = opts_y[best_y]
             TB_Y[i, j] = [0, 2][best_y]
 
-    # Determine which matrix has the best score at (n, m)
     final_scores = [M[n, m], X[n, m], Y[n, m]]
     state = int(np.argmax(final_scores))
     score = final_scores[state]
@@ -99,7 +112,7 @@ def needleman_wunsch(query: str, template: str,
     i, j = n, m
 
     while i > 0 or j > 0:
-        if state == 0:  # M
+        if state == 0:
             if i == 0 or j == 0:
                 break
             aligned_q.append(query[i - 1])
@@ -107,18 +120,17 @@ def needleman_wunsch(query: str, template: str,
             state = TB_M[i, j]
             i -= 1
             j -= 1
-        elif state == 1:  # X — gap in template
+        elif state == 1:
             aligned_q.append(query[i - 1])
             aligned_t.append("-")
             state = TB_X[i, j]
             i -= 1
-        else:  # Y — gap in query
+        else:
             aligned_q.append("-")
             aligned_t.append(template[j - 1])
             state = TB_Y[i, j]
             j -= 1
 
-    # Handle remaining residues
     while i > 0:
         aligned_q.append(query[i - 1])
         aligned_t.append("-")
@@ -131,7 +143,6 @@ def needleman_wunsch(query: str, template: str,
     aligned_q = "".join(reversed(aligned_q))
     aligned_t = "".join(reversed(aligned_t))
 
-    # Build mapping: (query_pos, template_pos) for matched positions
     mapping = []
     qi, ti = 0, 0
     for aq, at in zip(aligned_q, aligned_t):
