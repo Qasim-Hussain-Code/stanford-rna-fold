@@ -3,16 +3,13 @@ Kaggle Submission Notebook — Stanford RNA 3D Folding Part 2
 
 HelixForge: Hybrid TBM & Geometric Sampling for Multi-State RNA
 
-This notebook implements a Template-Based Modeling (TBM) pipeline that:
+This notebook implements an improved TBM pipeline that:
   1. Builds a template index from PDB_RNA/ structures
-  2. For each test target, searches for homologous templates
-  3. Transfers coordinates via sequence alignment
-  4. Fills gaps with geometric interpolation
-  5. Refines with distance regularization
-  6. Generates 5 diverse conformations for best-of-5 scoring
-
-Competition: Stanford RNA 3D Folding Part 2
-Approach: CPU-only, no deep learning, no internet required
+  2. Multi-template consensus: blends top-3 templates per target
+  3. Template-diverse ensemble: uses different templates as different models
+  4. Nussinov-guided gap filling for helical regions
+  5. Multi-chain handling for RNA complexes
+  6. Parallel prediction via multiprocessing
 """
 
 # ============================================================
@@ -43,7 +40,6 @@ from rna_fold.transfer import generate_de_novo
 # ============================================================
 # Cell 3: Configuration
 # ============================================================
-# Paths — adjust for Kaggle vs local
 KAGGLE_DATA_DIR = "/kaggle/input/stanford-rna-3d-folding-2"
 LOCAL_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
 
@@ -66,7 +62,9 @@ OUTPUT_FILE = "submission.csv"
 def main():
     """Main entry point for the submission pipeline."""
     print("=" * 60)
-    print("HelixForge: RNA 3D Structure Prediction Pipeline")
+    print("HelixForge: RNA 3D Structure Prediction Pipeline v2")
+    print("  Multi-template consensus + Template-diverse ensemble")
+    print("  Nussinov-guided gap filling + Compact random walk")
     print("=" * 60)
     total_start = time.time()
 
@@ -82,7 +80,6 @@ def main():
             template_index = pickle.load(f)
     elif os.path.exists(PDB_RNA_DIR):
         template_index = build_template_index(PDB_RNA_DIR)
-        # Cache for reuse
         try:
             with open(INDEX_CACHE, "wb") as f:
                 pickle.dump(template_index, f)
@@ -103,7 +100,6 @@ def main():
 
     if not os.path.exists(TEST_CSV):
         print(f"  ERROR: {TEST_CSV} not found!")
-        # Create a dummy submission so we don't crash
         pd.DataFrame(columns=[
             "ID", "resname", "resid",
             "x_1", "y_1", "z_1", "x_2", "y_2", "z_2",
@@ -116,8 +112,7 @@ def main():
     print(f"  Loaded {len(test_df)} target(s)")
     print(f"  Columns: {list(test_df.columns)}")
 
-    # Parse test data into dict: target_id -> sequence
-    # Handle different possible column names
+    # Parse test data — handle different column names
     if "target_id" in test_df.columns:
         id_col = "target_id"
     elif "ID" in test_df.columns:
@@ -140,20 +135,27 @@ def main():
 
     print(f"  Parsed {len(test_sequences)} unique targets")
 
-    # Show length distribution
     lengths = [len(s) for s in test_sequences.values()]
     print(f"  Sequence lengths: min={min(lengths)}, max={max(lengths)}, "
           f"mean={np.mean(lengths):.0f}, median={np.median(lengths):.0f}")
 
     # ========================================================
-    # Step 3: Run the pipeline
+    # Step 3: Run the improved pipeline
     # ========================================================
-    print(f"\n[Step 3] Running TBM pipeline...")
+    print(f"\n[Step 3] Running improved TBM pipeline...")
+    print(f"  Improvements active:")
+    print(f"    - Multi-template consensus (top-3 blending)")
+    print(f"    - Template-diverse ensemble (different templates as models)")
+    print(f"    - Nussinov-guided gap filling")
+    print(f"    - Compact random walk de novo backbone")
+    print(f"    - Multiprocessing parallelism")
+
     run_pipeline(
         test_sequences=test_sequences,
         template_index=template_index,
         output_path=OUTPUT_FILE,
         verbose=True,
+        n_workers=0,  # Auto-detect CPU count
     )
 
     # ========================================================
@@ -163,12 +165,10 @@ def main():
     sub_df = pd.read_csv(OUTPUT_FILE)
     print(f"  Rows: {len(sub_df)}")
     print(f"  Columns: {list(sub_df.columns)}")
-    print(f"  Expected columns: 18, Got: {len(sub_df.columns)}")
 
     expected_rows = sum(len(s) for s in test_sequences.values())
     print(f"  Expected rows: {expected_rows}, Got: {len(sub_df)}")
 
-    # Sanity check coordinates
     for model_idx in range(1, 6):
         x_col = f"x_{model_idx}"
         if x_col in sub_df.columns:

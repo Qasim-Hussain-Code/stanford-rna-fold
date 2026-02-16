@@ -20,6 +20,7 @@ def search_templates(
     kmer_prefilter_n: int = 50,
     min_identity: float = 0.20,
     min_coverage: float = 0.50,
+    max_kmer_candidates: int = 0,
 ) -> List[dict]:
     """
     Search for the best template matches for a query sequence.
@@ -55,6 +56,9 @@ def search_templates(
     if query_len == 0:
         return []
 
+    # max_kmer_candidates overrides kmer_prefilter_n when set
+    prefilter_n = max_kmer_candidates if max_kmer_candidates > 0 else kmer_prefilter_n
+
     # Step 1: k-mer pre-filter
     scored = []
     for entry in template_index:
@@ -68,7 +72,7 @@ def search_templates(
 
     # Sort by k-mer score, keep top candidates
     scored.sort(key=lambda x: -x[0])
-    candidates = [entry for _, entry in scored[:kmer_prefilter_n]]
+    candidates = [entry for _, entry in scored[:prefilter_n]]
 
     # Step 2: Full alignment on candidates
     results = []

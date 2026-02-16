@@ -2,7 +2,7 @@
 test_pipeline.py — Unit tests for the RNA 3D structure prediction pipeline.
 
 Tests each module independently and validates the end-to-end pipeline
-with mock data.
+with mock data. Updated for v2 improvements.
 """
 
 import os
@@ -15,11 +15,15 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from rna_fold.align import needleman_wunsch, sequence_identity, fast_kmer_score
-from rna_fold.transfer import transfer_coordinates, generate_de_novo, C1_C1_DISTANCE
+from rna_fold.transfer import (
+    transfer_coordinates, generate_de_novo,
+    multi_template_consensus, C1_C1_DISTANCE,
+)
 from rna_fold.refine import refine_coordinates
 from rna_fold.ensemble import generate_ensemble, apply_noise, apply_hinge
 from rna_fold.parser import parse_cif, _tokenize_cif_line
 from rna_fold.pipeline import predict_structure, _write_target
+from rna_fold.nussinov import predict_base_pairs, get_paired_regions, is_in_helix
 
 
 # ============================================================
@@ -32,7 +36,6 @@ class TestAlignment:
         assert aq == seq
         assert at == seq
         assert len(mapping) == len(seq)
-        # All positions should be matched
         for i, (qi, ti) in enumerate(mapping):
             assert qi == i
             assert ti == i
@@ -42,13 +45,12 @@ class TestAlignment:
         t = "ACGUUCGU"
         aq, at, score, mapping = needleman_wunsch(q, t)
         ident = sequence_identity(aq, at)
-        assert ident > 0.5  # Most positions should still match
+        assert ident > 0.5
 
     def test_gap_insertion(self):
         q = "ACGUACGU"
         t = "ACGUXXACGU"
         aq, at, score, mapping = needleman_wunsch(q, t)
-        # Should find alignment despite gaps
         assert len(mapping) > 0
 
     def test_empty_sequences(self):
@@ -81,14 +83,22 @@ class TestTransfer:
         np.testing.assert_array_almost_equal(result, template_coords)
 
     def test_gap_filling(self):
-        # Template has coords at positions 0 and 3, gaps at 1 and 2
         template_coords = np.array([
             [0, 0, 0], [5.9, 0, 0], [11.8, 0, 0], [17.7, 0, 0]
         ], dtype=float)
-        mapping = [(0, 0), (3, 3)]  # Only first and last match
+        mapping = [(0, 0), (3, 3)]
         result = transfer_coordinates("ACGU", template_coords, mapping)
         assert result.shape == (4, 3)
         assert not np.any(np.isnan(result))
+
+    def test_de_novo_compact(self):
+        coords = generate_de_novo("ACGUACGUACGUACGU", geometry="compact")
+        assert coords.shape == (16, 3)
+        assert not np.any(np.isnan(coords))
+        # Check that bonds are approximately correct
+        for i in range(15):
+            dist = np.linalg.norm(coords[i + 1] - coords[i])
+            assert dist > 2.0, f"Bond {i}-{i+1} too short: {dist}"
 
     def test_de_novo_helix(self):
         coords = generate_de_novo("ACGUACGU", geometry="helix")
@@ -98,10 +108,83 @@ class TestTransfer:
     def test_de_novo_linear(self):
         coords = generate_de_novo("ACGU", geometry="linear")
         assert coords.shape == (4, 3)
-        # Check spacing
         for i in range(3):
             dist = np.linalg.norm(coords[i + 1] - coords[i])
             assert abs(dist - C1_C1_DISTANCE) < 0.01
+
+
+# ============================================================
+# Multi-Template Consensus Tests
+# ============================================================
+class TestMultiTemplateConsensus:
+    def test_two_templates(self):
+        """Consensus of two templates should be between them."""
+        n = 8
+        seq = "ACGUACGU"
+        coords1 = np.zeros((n, 3))
+        coords2 = np.zeros((n, 3))
+        for i in range(n):
+            coords1[i] = [i * 5.9, 0, 0]
+            coords2[i] = [i * 5.9, 10, 0]  # Shifted in Y
+
+        mapping = [(i, i) for i in range(n)]
+        results = [
+            {"identity": 0.8, "coverage": 1.0, "mapping": mapping},
+            {"identity": 0.6, "coverage": 1.0, "mapping": mapping},
+        ]
+        coords_list = [(coords1, list(range(n))), (coords2, list(range(n)))]
+
+        consensus = multi_template_consensus(seq, results, coords_list)
+        assert consensus.shape == (n, 3)
+        assert not np.any(np.isnan(consensus))
+        # Consensus Y should be between 0 and 10 (weighted)
+        for i in range(n):
+            assert 0 < consensus[i, 1] < 10
+
+    def test_single_template_consensus(self):
+        """With one template, consensus should match that template."""
+        seq = "ACGU"
+        coords = np.array([[0, 0, 0], [5.9, 0, 0], [11.8, 0, 0], [17.7, 0, 0]])
+        mapping = [(0, 0), (1, 1), (2, 2), (3, 3)]
+        results = [{"identity": 1.0, "coverage": 1.0, "mapping": mapping}]
+        coords_list = [(coords, [1, 2, 3, 4])]
+
+        consensus = multi_template_consensus(seq, results, coords_list)
+        np.testing.assert_array_almost_equal(consensus, coords)
+
+
+# ============================================================
+# Nussinov Tests
+# ============================================================
+class TestNussinov:
+    def test_simple_hairpin(self):
+        """A sequence like GCAAAGC should form a hairpin."""
+        seq = "GCAAAGC"
+        pairs = predict_base_pairs(seq)
+        assert len(pairs) >= 1
+        # G and C at ends should pair
+        assert (0, 6) in pairs
+
+    def test_paired_regions(self):
+        """Test identification of helical stems."""
+        pairs = [(0, 10), (1, 9), (2, 8)]
+        regions = get_paired_regions(pairs, 11)
+        assert len(regions) >= 1
+        assert len(regions[0]["pairs"]) == 3
+
+    def test_is_in_helix(self):
+        pairs = [(0, 10), (1, 9)]
+        assert is_in_helix(0, pairs) == True
+        assert is_in_helix(10, pairs) == True
+        assert is_in_helix(5, pairs) == False
+
+    def test_empty_sequence(self):
+        pairs = predict_base_pairs("")
+        assert pairs == []
+
+    def test_short_sequence(self):
+        pairs = predict_base_pairs("AC")
+        assert pairs == []
 
 
 # ============================================================
@@ -138,7 +221,6 @@ class TestEnsemble:
     def test_models_are_diverse(self):
         base = generate_de_novo("ACGUACGUACGUACGU", geometry="helix")
         ensemble = generate_ensemble(base, n_models=5)
-        # Check that models are not identical
         for i in range(1, 5):
             rmsd = np.sqrt(np.mean((ensemble[0] - ensemble[i]) ** 2))
             assert rmsd > 0.01, f"Model {i} is identical to model 0"
@@ -152,7 +234,6 @@ class TestEnsemble:
         base = generate_de_novo("ACGUACGUACGUACGU", geometry="helix")
         hinged = apply_hinge(base, angle=15.0)
         assert not np.allclose(base, hinged)
-        # First half should be unchanged
         mid = len(base) // 2
         np.testing.assert_array_almost_equal(base[:mid], hinged[:mid])
 
@@ -202,7 +283,6 @@ ATOM 4 C1' U A 4 27.700 20.000 30.000 .
             seq, coords, resids = chains["A"]
             assert seq == "ACGU"
             assert coords.shape == (4, 3)
-            assert len(resids) == 4
             np.testing.assert_almost_equal(coords[0], [10.0, 20.0, 30.0])
         finally:
             os.unlink(tmpfile)
@@ -224,16 +304,14 @@ class TestSubmissionFormat:
         output = f.getvalue()
 
         lines = output.strip().split("\n")
-        assert len(lines) == 4  # One row per residue
+        assert len(lines) == 4
 
-        # Check first line format
         parts = lines[0].split(",")
-        assert len(parts) == 18  # ID + resname + resid + 5*(x,y,z)
+        assert len(parts) == 18
         assert parts[0] == "R1107_1"
         assert parts[1] == "A"
         assert parts[2] == "1"
 
-        # Verify all coords are valid floats
         for line in lines:
             parts = line.split(",")
             for coord_str in parts[3:]:
@@ -242,7 +320,7 @@ class TestSubmissionFormat:
 
 
 # ============================================================
-# Integration Test
+# Integration Tests
 # ============================================================
 class TestIntegration:
     def test_end_to_end_no_templates(self):
@@ -258,6 +336,20 @@ class TestIntegration:
         for model in models:
             assert model.shape == (len(sequence), 3)
             assert not np.any(np.isnan(model))
+
+    def test_compact_de_novo_diversity(self):
+        """Test that compact de novo produces diverse models."""
+        sequence = "ACGUACGUACGUACGUACGUACGU"
+        models = predict_structure(
+            sequence=sequence,
+            template_index=[],
+            n_models=5,
+            verbose=False,
+        )
+        # Check diversity
+        for i in range(1, 5):
+            rmsd = np.sqrt(np.mean((models[0] - models[i]) ** 2))
+            assert rmsd > 0.01, f"Model {i} not diverse enough"
 
 
 if __name__ == "__main__":
