@@ -1,7 +1,7 @@
 """
 Kaggle Submission Notebook — Stanford RNA 3D Folding Part 2
 
-HelixForge: Hybrid TBM & Geometric Sampling for Multi-State RNA
+RNAforge: Hybrid TBM & Geometric Sampling for Multi-State RNA
 
 This notebook implements an improved TBM pipeline that:
   1. Builds a template index from PDB_RNA/ structures
@@ -62,7 +62,7 @@ OUTPUT_FILE = "submission.csv"
 def main():
     """Main entry point for the submission pipeline."""
     print("=" * 60)
-    print("HelixForge: RNA 3D Structure Prediction Pipeline v2")
+    print("RNAforge: RNA 3D Structure Prediction Pipeline v0.2.0")
     print("  Multi-template consensus + Template-diverse ensemble")
     print("  Nussinov-guided gap filling + Compact random walk")
     print("=" * 60)
