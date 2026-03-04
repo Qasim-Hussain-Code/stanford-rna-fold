@@ -16,7 +16,7 @@ Given a query RNA sequence, the pipeline identifies candidate structural templat
 
 ### Multi-Template Consensus
 
-Rather than relying on a single best-scoring template, I blend coordinates from the top three templates using identity-weighted averaging. Before averaging, I structurally superpose all templates into a common reference frame using the Kabsch SVD algorithm (Kabsch, 1976). Without this superposition step, coordinates from different templates would be in different spatial orientations, and their average would produce a smeared, unphysical structure. The Kabsch-aligned consensus approach is adapted from established practice in the CASP protein structure prediction community.
+Instead of relying on a single best-scoring template, I blend coordinates from the top three templates using identity-weighted averaging. Before averaging, I structurally superpose all templates into a common reference frame using the Kabsch SVD algorithm (Kabsch, 1976). Without this superposition step, coordinates from different templates would be in different spatial orientations, and their average would produce a smeared, unphysical structure. The Kabsch-aligned consensus approach is adapted from established practice in the CASP protein structure prediction community.
 
 ### Gap Filling with Secondary Structure Guidance
 
