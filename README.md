@@ -4,7 +4,7 @@ This repository contains my submission to the [Stanford RNA 3D Folding Part 2](h
 
 ## Motivation
 
-Predicting the three-dimensional structure of RNA from its primary sequence is one of the central unsolved problems in structural biology. Unlike proteins, for which deep learning methods such as AlphaFold have achieved near-experimental accuracy, RNA structure prediction continues to pose significant challenges owing to the diversity of RNA folding motifs, the relative scarcity of experimentally determined structures, and the conformational flexibility inherent to RNA molecules. I pursued a Template-Based Modeling approach for this competition because TBM has historically demonstrated strong performance in nucleic acid structure prediction, including in the first iteration of this challenge, where a hybrid TBM solution placed first.
+Predicting the three-dimensional structure of RNA from its primary sequence is one of the central unsolved problems in structural biology. Unlike proteins, for which deep learning methods such as AlphaFold have achieved near-experimental accuracy, RNA structure prediction continues to pose significant challenges owing to the diversity of RNA folding motifs, the relative scarcity of experimentally determined structures, and the conformational flexibility inherent to RNA molecules. I pursued a Template-Based Modeling approach for this competition because TBM has historically demonstrated strong performance in nucleic acid structure prediction, including in the first iteration of this challenge, where a hybrid TBM solution placed first. Another reason for pursuing TBM are the limited computational resources available to me.
 
 ## Approach
 
