@@ -47,8 +47,8 @@ I have taken care to ensure that this submission adheres strictly to the competi
 - **Code originality.** All code in this repository is my own work, written from scratch. The underlying algorithms (Needleman-Wunsch alignment, Nussinov secondary structure prediction, Kabsch SVD superposition, simulated annealing) are well-established methods from the published scientific literature. Implementing known algorithms is standard and expected practice in computational biology.
 - **No pre-trained models.** The pipeline does not use any pre-trained deep learning models, neural network weights, or externally trained parameters of any kind. All computations are deterministic mathematical operations (dynamic programming, singular value decomposition, affine transformations) or controlled stochastic procedures (simulated annealing, random walk generation) executed from first principles.
 - **No external data.** The pipeline uses only the competition-provided PDB_RNA template library and the test sequence file. No additional databases, web resources, or external datasets are accessed at any point.
-- **Offline execution.** The submission notebook is designed to run with internet access disabled, as required by Kaggle Code Competition rules.
-- **Dependencies.** The only third-party dependencies are NumPy and pandas, both standard scientific computing libraries permitted in all Kaggle competitions.
+- **Offline execution.** The submission notebook is designed to run with internet access disabled, as required by Code Competition rules.
+- **Dependencies.** The only third-party dependencies are NumPy and pandas, both standard scientific computing libraries permitted in all competitions.
 - **No copying of other participants' work.** I have not viewed, copied, or derived from any other participant's solution, notebook, or discussion post relating to this specific competition.
 - **Honest representation.** The methodology described in this document accurately reflects what the code does. I have not misrepresented the capabilities or limitations of this pipeline.
 
