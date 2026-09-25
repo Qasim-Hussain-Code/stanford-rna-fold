@@ -1,6 +1,6 @@
 # stanford-rna-fold
 
-This repository contains my submission to the [Stanford RNA 3D Folding Part 2](https://www.kaggle.com/competitions/stanford-rna-3d-folding-2) competition on Kaggle. The competition asks participants to predict the three-dimensional coordinates of RNA molecules from nucleotide sequence alone, with the objective of maximizing the TM-score (best of five submitted conformations per target) against experimentally determined reference structures.
+This repository contains my submission to the [Stanford RNA 3D Folding Part 2](https://www.kaggle.com/competitions/stanford-rna-3d-folding-2) competition. The competition asks participants to predict the three-dimensional coordinates of RNA molecules from nucleotide sequence alone, with the objective of maximizing the TM-score (best of five submitted conformations per target) against experimentally determined reference structures.
 
 ## Motivation
 
