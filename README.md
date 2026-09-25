@@ -69,7 +69,7 @@ stanford-rna-fold/
         ensemble.py          Ensemble generation and maximin diversity selection
         pipeline.py          End-to-end pipeline orchestrator with multiprocessing
     kaggle/
-        notebook.py          Kaggle submission notebook script
+        notebook.py          submission notebook script
     tests/
         test_pipeline.py     Unit and integration tests (32 tests)
     setup.py
@@ -83,14 +83,14 @@ pip install -e .
 python -m pytest tests/ -v
 ```
 
-To build a distributable wheel for offline deployment on Kaggle:
+To build a distributable wheel for offline deployment:
 
 ```bash
 pip install build
 python -m build
 ```
 
-This produces `dist/rna_fold-0.2.0-py3-none-any.whl`, which can be uploaded as a private Kaggle dataset and installed in a competition notebook via `pip install rna_fold-0.2.0-py3-none-any.whl`.
+This produces `dist/rna_fold-0.2.0-py3-none-any.whl`, which can be uploaded as a private dataset and installed in a competition notebook via `pip install rna_fold-0.2.0-py3-none-any.whl`.
 
 ## Dependencies
 
