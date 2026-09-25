@@ -68,7 +68,6 @@ stanford-rna-fold/
         refine.py            Distance regularization, smoothing, clash removal
         ensemble.py          Ensemble generation and maximin diversity selection
         pipeline.py          End-to-end pipeline orchestrator with multiprocessing
-    kaggle/
         notebook.py          submission notebook script
     tests/
         test_pipeline.py     Unit and integration tests (32 tests)
